@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.IO;
 
@@ -16,40 +17,107 @@ namespace GenerateSECOverlay
             if (!File.Exists(path)) throw new ArgumentException("File not found", "path");
             var df = new DelimitedFile(path, "ASCII", "\n".ToCharArray().First(), (char)44, (char)59, (char)34);
             Console.WriteLine("Header fields:\n{0}", string.Join("\n", df.HeaderRecord));
-            Console.WriteLine("\nEnter beg bates field name.");
-            var begBates = Console.ReadLine();
-            Console.WriteLine("\nEnter beg attach field name.");
-            var begAttach = Console.ReadLine();
-            var outDict = new Dictionary<string, string>(); 
+            Console.WriteLine("Use default field names? (y/n)");
+            var defaultFieldNames = Console.ReadLine();
+            string begBatesFieldName;
+            string begAttachFieldName;
+            string endAttachFieldName;
+            string fileExtensionFieldName;
+            string emailSubjectFieldName;
+            string docTitleFieldName;
+            string origEFileSourceFieldname;
+            string sourceFilePathFieldname;
+            if (Regex.IsMatch(defaultFieldNames, "y", RegexOptions.IgnoreCase))
+            {
+                begBatesFieldName = "Production Bates Begin";
+                begAttachFieldName = "Production Bates Attach Begin";
+                endAttachFieldName = "Production Bates Attach End";
+                fileExtensionFieldName = "File Extension";
+                emailSubjectFieldName = "Email Subject";
+                docTitleFieldName = "Doc Title";
+                origEFileSourceFieldname = "Original E-File Source";
+                sourceFilePathFieldname = "Source File Path";
+            }
+            else
+            {
+                Console.WriteLine("\nEnter beg bates field name.");
+                begBatesFieldName = Console.ReadLine();
+                Console.WriteLine("\nEnter beg attach field name.");
+                begAttachFieldName = Console.ReadLine();
+                Console.WriteLine("\nEnter end attach field name.");
+                endAttachFieldName = Console.ReadLine();
+                Console.WriteLine("\nEnter file extension field name.");
+                fileExtensionFieldName = Console.ReadLine();
+                Console.WriteLine("\nEnter email subject field name.");
+                emailSubjectFieldName = Console.ReadLine();
+                Console.WriteLine("\nEnter document title field name.");
+                docTitleFieldName = Console.ReadLine();
+                Console.WriteLine("\nEnter original e-file source field name.");
+                origEFileSourceFieldname = Console.ReadLine();
+                Console.WriteLine("\nEnter source file path field name.");
+                sourceFilePathFieldname = Console.ReadLine();
+            }
+            var familyList = new List<Family>();
             df.GetNextRecord();
             while (!df.EndOfFile)
             {
-                var currentBegBates = df.GetFieldByName(begBates);
-                var currentBegAttach = df.GetFieldByName(begAttach);
-                if (outDict.Keys.Contains(currentBegAttach))
+                var begBates = df.GetFieldByName(begBatesFieldName);
+                var begAttach = df.GetFieldByName(begAttachFieldName);
+                var endAttach = df.GetFieldByName(endAttachFieldName);
+                var fileExtension = df.GetFieldByName(fileExtensionFieldName);
+                var emailSubject = df.GetFieldByName(emailSubjectFieldName);
+                var docTitle = df.GetFieldByName(docTitleFieldName);
+                var origEFileSource = df.GetFieldByName(origEFileSourceFieldname);
+                var sourceFilePath = df.GetFieldByName(sourceFilePathFieldname);
+                var doc = new Document(begBates, begAttach, endAttach, fileExtension, emailSubject, docTitle,
+                    origEFileSource, sourceFilePath);
+                if (begBates.Equals(begAttach))
                 {
-                    if (string.IsNullOrEmpty(outDict[currentBegAttach]))
-                    {
-                        outDict[currentBegAttach] = currentBegBates;
-                    }
-                    else
-                    {
-                        outDict[currentBegAttach] += "; " + currentBegBates;
-                    }
+                    var family = new Family {FamilyID = begAttach};
+                    family.Documents.Add(doc);
+                    familyList.Add(family);
                 }
-                outDict[currentBegBates] = "";
+                else
+                {
+                    var family = familyList.FirstOrDefault(f => f.FamilyID.Equals(begAttach));
+                    if (family == null)
+                    {
+                        throw new InvalidDataException("No matching family found.");
+                    }
+                    family.Documents.Add(doc);
+                }
                 df.GetNextRecord();
             }
-            using (var o_str = new StreamWriter(@"c:\temp\child_bates_test.csv", false, Encoding.ASCII))
+            using (var oStr = new StreamWriter(@"c:\temp\child_bates_test.csv", false, Encoding.ASCII))
             {
-                o_str.AutoFlush = true;
-                var innerDelimiter = "\",\"";
-                o_str.WriteLine("\"{0}{1}{2}\"", begBates, innerDelimiter, begAttach);
-                foreach (var kvp in outDict)
+                oStr.AutoFlush = true;
+                oStr.WriteLine("\"ProdBegBates\",\"ParentBates\",\"ChildBates\",\"FamilyRange\",\"SecSubject\",\"Path\",\"IntFilePath\"");
+                var sortedFamilyList = familyList.OrderBy(f => f.FamilyID);
+                foreach (var family in sortedFamilyList)
                 {
-                    var o_fields = new List<string>{ kvp.Key, kvp.Value };
-                    var o_line = string.Format("\"{0}\"", string.Join(innerDelimiter, o_fields));
-                    o_str.WriteLine(o_line);
+                    family.SetChildBates();
+                    family.SetParentBates();
+                    var sortedDocuments = family.Documents.OrderBy(d => d.ProdBegBates);
+                    foreach (var doc in sortedDocuments)
+                    {
+                        doc.SetFamilyRange();
+                        doc.SetSecSubject();
+                        var parent = family.Documents.FirstOrDefault(d => d.ProdBegBates.Equals(family.FamilyID));
+                        if (parent == null)
+                        {
+                            throw new InvalidOperationException("No parent found.");
+                        }
+                        doc.SetFinalPaths(parent.FileExtension);
+                        var strB = new StringBuilder();
+                        strB.Append(string.Format("\"{0}\",", doc.ProdBegBates));
+                        strB.Append(string.Format("\"{0}\",", doc.ParentBates));
+                        strB.Append(string.Format("\"{0}\",", doc.ChildBates));
+                        strB.Append(string.Format("\"{0}\",", doc.FamilyRange));
+                        strB.Append(string.Format("\"{0}\",", doc.SecSubject));
+                        strB.Append(string.Format("\"{0}\",", doc.Path));
+                        strB.Append(string.Format("\"{0}\"", doc.IntFilePath));
+                        oStr.WriteLine(strB.ToString());
+                    }
                 }
             }
         }
